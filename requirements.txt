@@ -1,0 +1,38 @@
+# ==========================================
+# 环境: RTX 4070, CUDA 12.8, Driver 570.x
+# ==========================================
+
+# PyTorch (CUDA 12.8 暂无官方wheel，使用 CUDA 12.4 兼容)
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+torchaudio
+
+# Transformers 生态
+transformers==4.45.0  # 固定版本，兼容 Qwen2-VL 和 InternVL2
+accelerate>=0.25.0
+
+# VLM 模型相关
+qwen-vl-utils  # Qwen2-VL 工具包
+
+# 视频处理
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# 工具
+tqdm>=4.65.0
+schedule>=1.2.0  # 定时任务调度
+
+# InternVL2 额外依赖
+einops
+timm
+sentencepiece
+
+# ==========================================
+# 可选依赖 (手动安装)
+# ==========================================
+# Flash Attention 2 (显著加速，推荐安装)
+# pip install flash-attn --no-build-isolation
+#
+# 向量数据库 (后续理解层使用)
+# pip install faiss-gpu  # 或 faiss-cpu

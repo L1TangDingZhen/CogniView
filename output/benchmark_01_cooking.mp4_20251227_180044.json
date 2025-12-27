@@ -1,0 +1,56 @@
+{
+  "video_name": "01_cooking.mp4",
+  "video_duration": 184.07,
+  "sample_interval": 1.0,
+  "num_frames": 1,
+  "test_time": "2025-12-27 18:00:26",
+  "gpu_name": "NVIDIA GeForce RTX 4070",
+  "models": [
+    {
+      "model_key": "qwen2-vl-2b",
+      "model_name": "Qwen/Qwen2-VL-2B-Instruct",
+      "load_time": 8.39,
+      "vram_usage_gb": 4.11,
+      "total_frames": 1,
+      "total_time": 1.46,
+      "avg_time_per_frame": 1.45,
+      "min_time": 1.45,
+      "max_time": 1.45,
+      "frame_results": [
+        {
+          "frame_id": 0,
+          "timestamp": 0.0,
+          "observation": "这是一张厨房烹饪的画面。画面中有一个黑色的平底锅放在炉子上，里面有一些炒菜的食材和调料。旁边有一只手拿着一个铲子正在翻动这些食物。\n\n背景是一个白色的墙壁，墙上挂着一些餐具和其他物品。左边还有一个透明玻璃柜门，里面有各种瓶罐等杂物。整个环境看起来像是在一个家庭式的厨房里进行日常做饭活动。",
+          "processing_time": 1.4504597187042236
+        }
+      ],
+      "error": ""
+    },
+    {
+      "model_key": "internvl2-1b",
+      "model_name": "OpenGVLab/InternVL2-1B",
+      "load_time": 2.25,
+      "vram_usage_gb": 0.0,
+      "total_frames": 0,
+      "total_time": 0.0,
+      "avg_time_per_frame": 0.0,
+      "min_time": 0.0,
+      "max_time": 0.0,
+      "frame_results": [],
+      "error": "加载失败"
+    },
+    {
+      "model_key": "internvl2-2b",
+      "model_name": "OpenGVLab/InternVL2-2B",
+      "load_time": 5.06,
+      "vram_usage_gb": 0.0,
+      "total_frames": 0,
+      "total_time": 0.0,
+      "avg_time_per_frame": 0.0,
+      "min_time": 0.0,
+      "max_time": 0.0,
+      "frame_results": [],
+      "error": "加载失败"
+    }
+  ]
+}
