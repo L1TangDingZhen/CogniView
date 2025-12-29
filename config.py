@@ -35,6 +35,35 @@ VLM_MODELS = {
         "description": "InternVL2 2B - 平衡之选",
         "vram_gb": 4,
     },
+    # 专用视频理解模型
+    "llava-next-video-7b": {
+        "name": "llava-hf/LLaVA-NeXT-Video-7B-hf",
+        "type": "llava-next-video",
+        "description": "LLaVA-NeXT-Video 7B - 专用视频理解模型",
+        "vram_gb": 14,
+        "vram_4bit_gb": 5,  # 4-bit量化后
+    },
+    "llava-next-video-7b-4bit": {
+        "name": "llava-hf/LLaVA-NeXT-Video-7B-hf",
+        "type": "llava-next-video",
+        "description": "LLaVA-NeXT-Video 7B (4-bit量化) - 适合12GB显存",
+        "vram_gb": 5,
+        "quantization": "4bit",
+    },
+    # Video-LLaVA
+    "video-llava-7b": {
+        "name": "LanguageBind/Video-LLaVA-7B-hf",
+        "type": "video-llava",
+        "description": "Video-LLaVA 7B - 图像/视频联合训练",
+        "vram_gb": 14,
+    },
+    "video-llava-7b-4bit": {
+        "name": "LanguageBind/Video-LLaVA-7B-hf",
+        "type": "video-llava",
+        "description": "Video-LLaVA 7B (4-bit量化)",
+        "vram_gb": 5,
+        "quantization": "4bit",
+    },
 }
 
 # 视频处理配置

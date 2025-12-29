@@ -60,6 +60,12 @@ class VLMLoader:
                 self._load_qwen2_vl(model_name, use_flash_attention)
             elif self.model_type == "internvl2":
                 self._load_internvl2(model_name, use_flash_attention)
+            elif self.model_type == "llava-next-video":
+                quantization = model_info.get("quantization")
+                self._load_llava_next_video(model_name, use_flash_attention, quantization)
+            elif self.model_type == "video-llava":
+                quantization = model_info.get("quantization")
+                self._load_video_llava(model_name, use_flash_attention, quantization)
             else:
                 print(f"错误: 不支持的模型类型 '{self.model_type}'")
                 return False
@@ -134,6 +140,90 @@ class VLMLoader:
             trust_remote_code=True
         )
 
+    def _load_llava_next_video(self, model_name: str, use_flash_attention: bool, quantization: Optional[str] = None):
+        """加载 LLaVA-NeXT-Video 模型"""
+        from transformers import LlavaNextVideoForConditionalGeneration, LlavaNextVideoProcessor
+
+        model_kwargs = {
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+        }
+
+        # 4-bit量化配置
+        if quantization == "4bit":
+            try:
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                )
+                model_kwargs["quantization_config"] = quantization_config
+                model_kwargs["device_map"] = "auto"
+                print("使用 4-bit 量化加载模型")
+            except ImportError:
+                print("警告: bitsandbytes 未安装，无法使用 4-bit 量化")
+                model_kwargs["device_map"] = "auto"
+        else:
+            model_kwargs["device_map"] = "auto"
+
+        # 检查 Flash Attention 是否可用
+        if use_flash_attention:
+            try:
+                import flash_attn
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                print("使用 Flash Attention 2 加速")
+            except ImportError:
+                print("Flash Attention 未安装，使用默认 attention")
+
+        self.model = LlavaNextVideoForConditionalGeneration.from_pretrained(
+            model_name,
+            **model_kwargs
+        )
+        self.processor = LlavaNextVideoProcessor.from_pretrained(model_name)
+
+    def _load_video_llava(self, model_name: str, use_flash_attention: bool, quantization: Optional[str] = None):
+        """加载 Video-LLaVA 模型"""
+        from transformers import VideoLlavaForConditionalGeneration, VideoLlavaProcessor
+
+        model_kwargs = {
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+        }
+
+        # 4-bit量化配置
+        if quantization == "4bit":
+            try:
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                )
+                model_kwargs["quantization_config"] = quantization_config
+                model_kwargs["device_map"] = "auto"
+                print("使用 4-bit 量化加载模型")
+            except ImportError:
+                print("警告: bitsandbytes 未安装，无法使用 4-bit 量化")
+                model_kwargs["device_map"] = "auto"
+        else:
+            model_kwargs["device_map"] = "auto"
+
+        # 检查 Flash Attention 是否可用
+        if use_flash_attention:
+            try:
+                import flash_attn
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                print("使用 Flash Attention 2 加速")
+            except ImportError:
+                print("Flash Attention 未安装，使用默认 attention")
+
+        self.model = VideoLlavaForConditionalGeneration.from_pretrained(
+            model_name,
+            **model_kwargs
+        )
+        self.processor = VideoLlavaProcessor.from_pretrained(model_name)
+
     def unload_model(self):
         """卸载当前模型，释放显存"""
         if self.model is not None:
@@ -182,6 +272,9 @@ class VLMLoader:
             return self._generate_qwen2_vl(images, prompt, max_new_tokens, temperature)
         elif self.model_type == "internvl2":
             return self._generate_internvl2(images, prompt, max_new_tokens, temperature)
+        elif self.model_type == "llava-next-video":
+            # LLaVA-NeXT-Video 使用图像时，当作单帧视频处理
+            return self._generate_llava_next_video_from_images(images, prompt, max_new_tokens, temperature)
         else:
             raise ValueError(f"不支持的模型类型: {self.model_type}")
 
@@ -311,6 +404,292 @@ class VLMLoader:
             return response
         else:
             raise NotImplementedError("InternVL2 chat 方法不可用")
+
+    def _generate_llava_next_video_from_images(
+        self,
+        images: List[Image.Image],
+        prompt: str,
+        max_new_tokens: int,
+        temperature: float,
+    ) -> str:
+        """LLaVA-NeXT-Video 从图像生成（将图像当作视频帧处理）"""
+        import numpy as np
+
+        # 将PIL图像转换为numpy数组（模拟视频帧）
+        frames = []
+        for img in images:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            # 缩放到合理尺寸
+            max_size = 336
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+            frames.append(np.array(img))
+
+        # 转换为 (num_frames, height, width, 3) 格式
+        video_clip = np.stack(frames)
+
+        # 构建对话格式
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "video"},
+                ],
+            },
+        ]
+
+        text = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+        inputs = self.processor(text=text, videos=video_clip, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+            )
+
+        response = self.processor.decode(output[0], skip_special_tokens=True)
+        # 提取助手回复部分
+        if "ASSISTANT:" in response:
+            response = response.split("ASSISTANT:")[-1].strip()
+        return response
+
+    def generate_from_video(
+        self,
+        video_path: str,
+        prompt: str,
+        num_frames: int = 8,
+        max_new_tokens: int = 512,
+        temperature: float = 0.7,
+        resolution: int = 336,
+    ) -> str:
+        """
+        直接从视频文件生成描述（仅支持 LLaVA-NeXT-Video 和 Qwen2-VL）
+
+        Args:
+            video_path: 视频文件路径
+            prompt: 提示词
+            num_frames: 采样帧数
+            max_new_tokens: 最大生成token数
+            temperature: 生成温度
+            resolution: 帧分辨率
+
+        Returns:
+            生成的文本描述
+        """
+        if self.model is None:
+            raise RuntimeError("模型未加载，请先调用 load_model()")
+
+        if self.model_type == "llava-next-video":
+            return self._generate_llava_next_video_from_file(video_path, prompt, num_frames, max_new_tokens, temperature, resolution)
+        elif self.model_type == "video-llava":
+            return self._generate_video_llava_from_file(video_path, prompt, num_frames, max_new_tokens, temperature, resolution)
+        elif self.model_type == "qwen2-vl":
+            return self._generate_qwen2_vl_from_video(video_path, prompt, num_frames, max_new_tokens, temperature, resolution)
+        else:
+            raise ValueError(f"模型类型 {self.model_type} 不支持直接视频输入，请使用 generate() 方法传入图像帧")
+
+    def _generate_llava_next_video_from_file(
+        self,
+        video_path: str,
+        prompt: str,
+        num_frames: int,
+        max_new_tokens: int,
+        temperature: float,
+        resolution: int = 336,
+    ) -> str:
+        """LLaVA-NeXT-Video 从视频文件生成"""
+        import av
+        import numpy as np
+        from PIL import Image as PILImage
+
+        # 读取视频帧
+        container = av.open(video_path)
+        total_frames = container.streams.video[0].frames
+        if total_frames == 0:
+            # 某些视频格式无法获取总帧数，尝试计算
+            total_frames = int(container.streams.video[0].duration * container.streams.video[0].average_rate)
+
+        # 均匀采样帧索引
+        indices = np.linspace(0, max(total_frames - 1, 0), num_frames, dtype=int).tolist()
+
+        frames = []
+        container.seek(0)
+        for i, frame in enumerate(container.decode(video=0)):
+            if i in indices:
+                # 转换为PIL图像进行缩放
+                img = PILImage.fromarray(frame.to_ndarray(format="rgb24"))
+                # 缩放到目标分辨率
+                if max(img.size) > resolution:
+                    ratio = resolution / max(img.size)
+                    new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                    img = img.resize(new_size, PILImage.LANCZOS)
+                frames.append(np.array(img))
+            if len(frames) >= num_frames:
+                break
+        container.close()
+
+        if len(frames) == 0:
+            raise ValueError(f"无法从视频 {video_path} 读取帧")
+
+        video_clip = np.stack(frames)
+
+        # 构建对话
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "video"},
+                ],
+            },
+        ]
+
+        text = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+        inputs = self.processor(text=text, videos=video_clip, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+            )
+
+        response = self.processor.decode(output[0], skip_special_tokens=True)
+        if "ASSISTANT:" in response:
+            response = response.split("ASSISTANT:")[-1].strip()
+        return response
+
+    def _generate_video_llava_from_file(
+        self,
+        video_path: str,
+        prompt: str,
+        num_frames: int,
+        max_new_tokens: int,
+        temperature: float,
+        resolution: int = 336,
+    ) -> str:
+        """Video-LLaVA 从视频文件生成"""
+        import av
+        import numpy as np
+        from PIL import Image as PILImage
+
+        # 读取视频帧
+        container = av.open(video_path)
+        total_frames = container.streams.video[0].frames
+        if total_frames == 0:
+            total_frames = int(container.streams.video[0].duration * container.streams.video[0].average_rate)
+
+        # 均匀采样帧索引
+        indices = np.linspace(0, max(total_frames - 1, 0), num_frames, dtype=int).tolist()
+
+        frames = []
+        container.seek(0)
+        for i, frame in enumerate(container.decode(video=0)):
+            if i in indices:
+                img = PILImage.fromarray(frame.to_ndarray(format="rgb24"))
+                if max(img.size) > resolution:
+                    ratio = resolution / max(img.size)
+                    new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                    img = img.resize(new_size, PILImage.LANCZOS)
+                frames.append(np.array(img))
+            if len(frames) >= num_frames:
+                break
+        container.close()
+
+        if len(frames) == 0:
+            raise ValueError(f"无法从视频 {video_path} 读取帧")
+
+        video_clip = np.stack(frames)
+
+        # Video-LLaVA 使用 USER: ... ASSISTANT: 格式
+        full_prompt = f"USER: <video>\n{prompt} ASSISTANT:"
+
+        inputs = self.processor(text=full_prompt, videos=video_clip, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+            )
+
+        response = self.processor.decode(output[0], skip_special_tokens=True)
+        # 提取 ASSISTANT: 后的内容
+        if "ASSISTANT:" in response:
+            response = response.split("ASSISTANT:")[-1].strip()
+        return response
+
+    def _generate_qwen2_vl_from_video(
+        self,
+        video_path: str,
+        prompt: str,
+        num_frames: int,
+        max_new_tokens: int,
+        temperature: float,
+        resolution: int = 360,
+    ) -> str:
+        """Qwen2-VL 从视频文件生成"""
+        from qwen_vl_utils import process_vision_info
+
+        # 构建视频消息
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "video",
+                        "video": video_path,
+                        "nframes": num_frames,
+                        "max_pixels": resolution * resolution,
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
+
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=temperature > 0,
+            )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return output_text
 
     def get_current_model_info(self) -> Optional[dict]:
         """获取当前加载的模型信息"""

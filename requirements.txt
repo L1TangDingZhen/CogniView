@@ -18,6 +18,11 @@ qwen-vl-utils  # Qwen2-VL 工具包
 # 视频处理
 opencv-python>=4.8.0
 Pillow>=10.0.0
+av>=12.0.0  # PyAV - LLaVA-NeXT-Video 视频解码
+
+# 量化支持
+bitsandbytes>=0.43.0  # 4-bit 量化
+protobuf>=3.20.0  # LLaMA tokenizer 依赖
 
 # 工具
 tqdm>=4.65.0
