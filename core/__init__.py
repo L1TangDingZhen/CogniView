@@ -5,7 +5,7 @@ from .frame_buffer import FrameBuffer
 from .hybrid_trigger import HybridTrigger
 from .adaptive_params import AdaptiveParams
 from .prompt_manager import PromptManager
-from .video_analyzer import VideoAnalyzer
+from .video_analyzer import VideoAnalyzer, AnalysisResult
 
 __all__ = [
     "FrameBuffer",
@@ -13,4 +13,5 @@ __all__ = [
     "AdaptiveParams",
     "PromptManager",
     "VideoAnalyzer",
+    "AnalysisResult",
 ]

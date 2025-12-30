@@ -67,8 +67,12 @@ class FrameBuffer:
 
     def _cleanup_old_frames(self):
         """清理过期的帧"""
-        current_time = time.time()
-        while self.buffer and (current_time - self.buffer[0].timestamp) > self.max_age:
+        # 使用最新帧的时间戳作为参考，而不是墙钟时间
+        # 这样视频时间和实时摄像头都能正确工作
+        if not self.buffer:
+            return
+        latest_time = self.buffer[-1].timestamp
+        while self.buffer and (latest_time - self.buffer[0].timestamp) > self.max_age:
             self.buffer.popleft()
 
     def get_frames(

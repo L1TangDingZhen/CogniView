@@ -262,9 +262,11 @@ class VideoAnalyzer:
             )
 
         except Exception as e:
+            import traceback
+            error_msg = str(e) if str(e) else f"{type(e).__name__}: {traceback.format_exc()[-200:]}"
             return AnalysisResult(
                 success=False,
-                error=str(e),
+                error=error_msg,
                 trigger_reason=trigger_reason,
                 timestamp=timestamp,
             )
@@ -276,9 +278,8 @@ class VideoAnalyzer:
         resolution: int,
     ) -> str:
         """使用视频模式分析多帧"""
-        import numpy as np
-
-        # 缩放帧
+        # 预处理：缩放和RGB转换，保持PIL格式
+        # 各模型推理方法自己负责转换成所需格式（模型无关设计）
         processed_frames = []
         for img in frames:
             if max(img.size) > resolution:
@@ -287,35 +288,38 @@ class VideoAnalyzer:
                 img = img.resize(new_size, Image.LANCZOS)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            processed_frames.append(np.array(img))
-
-        video_clip = np.stack(processed_frames)
+            processed_frames.append(img)
 
         # 根据模型类型选择推理方式
         model_type = self.vlm.model_type
 
         if model_type == "qwen2-vl":
-            return self._qwen_video_inference(video_clip, prompt)
+            return self._qwen_video_inference(processed_frames, prompt)
         elif model_type in ("llava-next-video", "video-llava"):
-            return self._llava_video_inference(video_clip, prompt)
+            return self._llava_video_inference(processed_frames, prompt)
         else:
             # 回退到多图模式
             return self.vlm.generate(
-                images=[Image.fromarray(f) for f in processed_frames],
+                images=processed_frames,
                 prompt=prompt,
                 max_new_tokens=256,
                 temperature=0.5,
             )
 
-    def _qwen_video_inference(self, video_clip, prompt: str) -> str:
-        """Qwen2-VL 视频推理"""
+    def _qwen_video_inference(self, frames: List[Image.Image], prompt: str) -> str:
+        """Qwen2-VL 视频推理
+
+        Args:
+            frames: PIL Image 列表
+            prompt: 提示词
+        """
         from qwen_vl_utils import process_vision_info
 
-        # 构建消息
+        # 构建消息，qwen_vl_utils 支持 PIL Image 列表作为视频输入
         messages = [{
             "role": "user",
             "content": [
-                {"type": "video", "video": video_clip},
+                {"type": "video", "video": frames},
                 {"type": "text", "text": prompt},
             ],
         }]
@@ -339,6 +343,7 @@ class VideoAnalyzer:
                 max_new_tokens=256,
                 temperature=0.5,
                 do_sample=True,
+                repetition_penalty=1.2,  # 防止输出重复循环
             )
 
         generated_ids_trimmed = [
@@ -349,8 +354,18 @@ class VideoAnalyzer:
             generated_ids_trimmed, skip_special_tokens=True
         )[0]
 
-    def _llava_video_inference(self, video_clip, prompt: str) -> str:
-        """LLaVA 视频推理"""
+    def _llava_video_inference(self, frames: List[Image.Image], prompt: str) -> str:
+        """LLaVA 视频推理
+
+        Args:
+            frames: PIL Image 列表
+            prompt: 提示词
+        """
+        import numpy as np
+
+        # LLaVA 需要 numpy 数组格式，在此转换
+        video_clip = np.stack([np.array(img) for img in frames])
+
         # 根据模型类型选择格式
         if self.vlm.model_type == "llava-next-video":
             conversation = [{
@@ -375,6 +390,7 @@ class VideoAnalyzer:
                 max_new_tokens=256,
                 do_sample=True,
                 temperature=0.5,
+                repetition_penalty=1.2,  # 防止输出重复循环
             )
 
         response = self.vlm.processor.decode(output[0], skip_special_tokens=True)

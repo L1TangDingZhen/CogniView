@@ -84,6 +84,7 @@ class VideoServiceConfig:
     # 运行控制
     max_runtime: Optional[int] = None  # 最大运行时间（秒）
     show_preview: bool = True  # 是否显示预览窗口
+    realtime: bool = False  # 视频文件是否按真实时间播放
 
     # 保存
     save_results: bool = True
@@ -245,10 +246,17 @@ class VideoObservationService:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps if fps > 0 else 0
 
-        print(f"视频时长: {duration:.1f}秒, 帧数: {total_frames}, FPS: {fps:.1f}")
+        print(f"视频时长: {duration:.1f}秒 ({duration/3600:.2f}小时), 帧数: {total_frames}, FPS: {fps:.1f}")
+
+        # 实时模式提示
+        if self.config.realtime:
+            print(f"⏱️  实时模式: 将按真实时间播放，预计运行 {duration/3600:.2f} 小时")
+        else:
+            print(f"⚡ 快速模式: 尽快处理完成")
 
         frame_idx = 0
         start_time = time.time()
+        frame_interval = 1.0 / fps if fps > 0 else 0.033  # 每帧间隔
 
         while self.running:
             if self.paused:
@@ -272,10 +280,23 @@ class VideoObservationService:
             if result:
                 self._handle_result(result)
 
-            # 显示进度
-            if frame_idx % 100 == 0:
-                progress = frame_idx / total_frames * 100 if total_frames > 0 else 0
-                print(f"进度: {progress:.1f}% ({frame_idx}/{total_frames})")
+            # 实时模式：同步到真实时间
+            if self.config.realtime:
+                elapsed_real = time.time() - start_time
+                expected_time = frame_idx * frame_interval
+                if expected_time > elapsed_real:
+                    time.sleep(expected_time - elapsed_real)
+
+            # 显示进度（实时模式每分钟显示，快速模式每100帧）
+            if self.config.realtime:
+                if frame_idx % int(fps * 60) == 0:  # 每分钟
+                    elapsed_min = (time.time() - start_time) / 60
+                    video_min = video_time / 60
+                    print(f"⏱️  已运行: {elapsed_min:.1f}分钟 | 视频进度: {video_min:.1f}分钟 ({video_time/duration*100:.1f}%)")
+            else:
+                if frame_idx % 100 == 0:
+                    progress = frame_idx / total_frames * 100 if total_frames > 0 else 0
+                    print(f"进度: {progress:.1f}% ({frame_idx}/{total_frames})")
 
             # 显示预览（可选，视频文件通常不需要）
             if self.config.show_preview:
@@ -465,6 +486,8 @@ def main():
                        help="最大运行时间（秒）")
     parser.add_argument("--no-preview", action="store_true",
                        help="不显示预览窗口")
+    parser.add_argument("--realtime", action="store_true",
+                       help="视频文件按真实时间播放（模拟摄像头）")
 
     # 信息
     parser.add_argument("--list-models", action="store_true",
@@ -525,6 +548,7 @@ def main():
         motion_threshold=args.motion_threshold,
         max_runtime=args.max_time,
         show_preview=not args.no_preview,
+        realtime=args.realtime,
     )
 
     # 启动服务

@@ -22,18 +22,20 @@ LOG_DIR = Path(__file__).parent / "logs"
 
 MODEL_CONFIG = {
     # 默认模型（启动时选择，运行期间不切换）
-    "default": "qwen2-vl-2b",
+    "default": "moondream2",  # Jetson 默认用轻量模型
 
     # 可用模型列表
     "available": [
+        "moondream2",            # 英文，2GB显存，边缘设备优化
         "qwen2-vl-2b",           # 中文，4GB显存
         "llava-next-video-7b-4bit",  # 英文，5GB显存
     ],
 
     # 模型描述（用于命令行帮助）
     "descriptions": {
-        "qwen2-vl-2b": "Qwen2-VL 2B - 中文输出，推荐",
-        "llava-next-video-7b-4bit": "LLaVA-NeXT-Video 7B (4-bit) - 英文输出，细节丰富",
+        "moondream2": "Moondream2 1.6B - 边缘设备优化，仅2GB显存",
+        "qwen2-vl-2b": "Qwen2-VL 2B - 中文输出，需4GB显存",
+        "llava-next-video-7b-4bit": "LLaVA-NeXT-Video 7B (4-bit) - 英文输出，需5GB显存",
     },
 }
 
@@ -115,11 +117,11 @@ BUFFER_CONFIG = {
 # ==========================================
 
 GPU_CONFIG = {
-    # GPU显存大小（GB）
-    "memory_gb": 12.0,
+    # GPU显存大小（GB）- Jetson Orin 统一内存约 7.6GB
+    "memory_gb": 7.6,
 
-    # 安全阈值（使用显存的百分比）
-    "safe_margin": 0.8,
+    # 安全阈值（使用显存的百分比）- Jetson 需更保守
+    "safe_margin": 0.6,
 }
 
 # ==========================================

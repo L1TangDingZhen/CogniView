@@ -1,14 +1,24 @@
-  __pycache__/
-  *.pyc
-  *.pyo
-  .env
-  *.db
-  output/*.json
-  .venv/
-  venv/
-  *.egg-info/
-  .idea/
-  .vscode/
-  EOF
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
 
+# 环境
+.env
+.venv/
+venv/
 
+# 数据库
+*.db
+
+# 输出和日志
+output/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 其他
+.think/

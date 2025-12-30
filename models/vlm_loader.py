@@ -66,6 +66,8 @@ class VLMLoader:
             elif self.model_type == "video-llava":
                 quantization = model_info.get("quantization")
                 self._load_video_llava(model_name, use_flash_attention, quantization)
+            elif self.model_type == "moondream":
+                self._load_moondream(model_name)
             else:
                 print(f"错误: 不支持的模型类型 '{self.model_type}'")
                 return False
@@ -224,6 +226,26 @@ class VLMLoader:
         )
         self.processor = VideoLlavaProcessor.from_pretrained(model_name)
 
+    def _load_moondream(self, model_name: str):
+        """加载 Moondream2 模型 - 轻量级，适合边缘设备"""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        print("加载 Moondream2 (轻量级边缘设备模型)...")
+
+        # Moondream 不支持 device_map='auto'，手动加载到设备
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+        )
+        # 手动移动到 GPU
+        if torch.cuda.is_available():
+            self.model = self.model.to("cuda")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.processor = None  # moondream 使用 tokenizer 而非 processor
+
     def unload_model(self):
         """卸载当前模型，释放显存"""
         if self.model is not None:
@@ -275,6 +297,8 @@ class VLMLoader:
         elif self.model_type == "llava-next-video":
             # LLaVA-NeXT-Video 使用图像时，当作单帧视频处理
             return self._generate_llava_next_video_from_images(images, prompt, max_new_tokens, temperature)
+        elif self.model_type == "moondream":
+            return self._generate_moondream(images, prompt, max_new_tokens)
         else:
             raise ValueError(f"不支持的模型类型: {self.model_type}")
 
@@ -404,6 +428,36 @@ class VLMLoader:
             return response
         else:
             raise NotImplementedError("InternVL2 chat 方法不可用")
+
+    def _generate_moondream(
+        self,
+        images: List[Image.Image],
+        prompt: str,
+        max_new_tokens: int,
+    ) -> str:
+        """Moondream2 生成 - 轻量级模型"""
+        # Moondream 只支持单图，取第一张或最后一张
+        image = images[-1] if images else None
+
+        if image is None:
+            return "错误: 没有输入图像"
+
+        # 确保是 RGB
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        # 缩放到合理尺寸
+        max_size = 384
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.LANCZOS)
+
+        # Moondream 使用 encode_image + answer_question
+        enc_image = self.model.encode_image(image)
+        response = self.model.answer_question(enc_image, prompt, self.tokenizer)
+
+        return response
 
     def _generate_llava_next_video_from_images(
         self,

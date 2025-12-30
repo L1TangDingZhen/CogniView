@@ -610,6 +610,815 @@ def run_multi_frame_test():
     print(f"\n📁 结果已保存: {output_path}")
 
 
+# ==================== 视频模式测试 ====================
+
+def run_video_mode_test():
+    """Qwen2-VL 原生视频模式测试"""
+    videos = list_test_videos()
+    if not videos:
+        return
+
+    video = select_video(videos)
+    if not video:
+        return
+
+    print("\n" + "=" * 60)
+    print("  Qwen2-VL 视频模式测试")
+    print("=" * 60)
+    print("\n此测试使用 Qwen2-VL 的原生视频输入功能")
+    print("直接将视频文件送入模型，而非抽帧")
+
+    # 配置参数
+    print("\n视频参数配置:")
+    print("  注意：视频模式显存占用大，建议限制参数")
+    print("  采样模式：指定总帧数，从视频中均匀采样")
+    max_frames = int(input("  总帧数 (推荐4-8，默认4): ").strip() or "4")
+    # min_pixels 默认是 256*28*28，所以分辨率至少需要 336
+    resolution = int(input("  分辨率 (最小336，推荐336-480，默认336): ").strip() or "336")
+
+    print(f"\n{'='*60}")
+    print(f"测试配置")
+    print(f"  视频: {video.name}")
+    print(f"  模型: Qwen2-VL-2B (视频模式)")
+    print(f"  采样帧数: {max_frames} 帧（均匀分布）")
+    print(f"  分辨率: {resolution}x{resolution}")
+    print(f"{'='*60}")
+
+    confirm = input("\n确认开始? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("已取消")
+        return
+
+    # 先清理可能残留的显存
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    print(f"\n清理后显存: {get_vram_usage():.2f}GB")
+
+    # 加载模型
+    print("\n正在加载 Qwen2-VL-2B...")
+    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    from qwen_vl_utils import process_vision_info
+
+    model_name = "Qwen/Qwen2-VL-2B-Instruct"
+    model = None
+    processor = None
+
+    load_start = time.time()
+
+    # 检查 Flash Attention
+    model_kwargs = {
+        "torch_dtype": torch.bfloat16,
+        "device_map": "auto",
+    }
+    try:
+        import flash_attn
+        model_kwargs["attn_implementation"] = "flash_attention_2"
+        print("使用 Flash Attention 2")
+    except ImportError:
+        print("Flash Attention 未安装，使用默认 attention")
+
+    model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, **model_kwargs)
+    processor = AutoProcessor.from_pretrained(model_name)
+
+    load_time = time.time() - load_start
+    print(f"模型加载完成: {load_time:.2f}s")
+
+    vram = get_vram_usage()
+    print(f"显存使用: {vram:.2f}GB")
+
+    # 构建视频输入消息
+    # nframes: 从视频中均匀采样的帧数
+    # max_pixels: 每帧最大像素数（控制分辨率）
+    video_config = {
+        "type": "video",
+        "video": str(video),
+        "nframes": max_frames,
+        "max_pixels": resolution * resolution,
+    }
+
+    result1 = ""
+    result2 = ""
+    infer_time1 = 0
+    infer_time2 = 0
+
+    try:
+        # 测试1: 场景和动作描述
+        print("\n" + "=" * 60)
+        print("测试1: 视频内容描述")
+        print("-" * 60)
+
+        messages1 = [{
+            "role": "user",
+            "content": [
+                video_config,
+                {"type": "text", "text": "请观看这段视频，详细描述：\n1. 视频场景\n2. 出现的人物\n3. 人物正在进行什么活动/动作\n用中文回答。"}
+            ]
+        }]
+
+        text1 = processor.apply_chat_template(messages1, tokenize=False, add_generation_prompt=True)
+        image_inputs1, video_inputs1 = process_vision_info(messages1)
+
+        inputs1 = processor(
+            text=[text1],
+            images=image_inputs1,
+            videos=video_inputs1,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        infer_start = time.time()
+        with torch.no_grad():
+            generated_ids1 = model.generate(
+                **inputs1,
+                max_new_tokens=512,
+                temperature=0.7,
+                do_sample=True,
+                repetition_penalty=1.2,
+            )
+        infer_time1 = time.time() - infer_start
+
+        generated_ids_trimmed1 = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs1.input_ids, generated_ids1)
+        ]
+        result1 = processor.batch_decode(generated_ids_trimmed1, skip_special_tokens=True)[0]
+
+        print(f"耗时: {infer_time1:.2f}s")
+        print(f"\n{result1}")
+
+        # 清理中间变量
+        del inputs1, generated_ids1, image_inputs1, video_inputs1
+        torch.cuda.empty_cache()
+
+        # 测试2: 动作识别专项
+        print("\n" + "=" * 60)
+        print("测试2: 动作识别专项")
+        print("-" * 60)
+
+        messages2 = [{
+            "role": "user",
+            "content": [
+                video_config,
+                {"type": "text", "text": "请仔细观察视频中人物的动作，判断：\n1. 这是什么类型的活动？（如：跳舞、运动、做饭、工作、休息等）\n2. 动作是静态的还是动态连续的？\n3. 如果是动态的，描述动作的特点。\n直接给出判断结果。"}
+            ]
+        }]
+
+        text2 = processor.apply_chat_template(messages2, tokenize=False, add_generation_prompt=True)
+        image_inputs2, video_inputs2 = process_vision_info(messages2)
+
+        inputs2 = processor(
+            text=[text2],
+            images=image_inputs2,
+            videos=video_inputs2,
+            padding=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        infer_start = time.time()
+        with torch.no_grad():
+            generated_ids2 = model.generate(
+                **inputs2,
+                max_new_tokens=256,
+                temperature=0.5,
+                do_sample=True,
+                repetition_penalty=1.2,
+            )
+        infer_time2 = time.time() - infer_start
+
+        generated_ids_trimmed2 = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs2.input_ids, generated_ids2)
+        ]
+        result2 = processor.batch_decode(generated_ids_trimmed2, skip_special_tokens=True)[0]
+
+        print(f"耗时: {infer_time2:.2f}s")
+        print(f"\n{result2}")
+
+        # 性能统计
+        print("\n" + "=" * 60)
+        print("性能统计")
+        print("=" * 60)
+        print(f"  模型加载: {load_time:.2f}s")
+        print(f"  测试1耗时: {infer_time1:.2f}s")
+        print(f"  测试2耗时: {infer_time2:.2f}s")
+        print(f"  总推理时间: {infer_time1 + infer_time2:.2f}s")
+        print(f"  显存占用: {get_vram_usage():.2f}GB")
+
+    except Exception as e:
+        print(f"\n❌ 测试出错: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # 确保清理显存
+        print("\n正在清理显存...")
+        if model is not None:
+            del model
+        if processor is not None:
+            del processor
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print(f"清理完成，当前显存: {get_vram_usage():.2f}GB")
+
+    # 保存结果
+    if result1 or result2:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = OUTPUT_DIR / f"video_mode_test_{video.name}_{timestamp_str}.json"
+
+        result = {
+            "video": video.name,
+            "model": "qwen2-vl-2b",
+            "mode": "video",
+            "nframes": max_frames,
+            "resolution": resolution,
+            "load_time": load_time,
+            "test1": {
+                "prompt": "场景和动作描述",
+                "result": result1,
+                "time": infer_time1,
+            },
+            "test2": {
+                "prompt": "动作识别专项",
+                "result": result2,
+                "time": infer_time2,
+            },
+            "vram_gb": vram,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        print(f"\n📁 结果已保存: {output_path}")
+
+
+# ==================== LLaVA-NeXT-Video 测试 ====================
+
+def run_llava_next_video_test():
+    """LLaVA-NeXT-Video 专用视频模型测试"""
+    videos = list_test_videos()
+    if not videos:
+        return
+
+    video = select_video(videos)
+    if not video:
+        return
+
+    print("\n" + "=" * 60)
+    print("  LLaVA-NeXT-Video 视频模型测试")
+    print("=" * 60)
+    print("\n此测试使用专用视频理解模型 LLaVA-NeXT-Video-7B")
+    print("支持 4-bit 量化，适合 12GB 显存 GPU")
+
+    # 选择量化模式
+    print("\n量化选项:")
+    print("  [1] 4-bit 量化 (推荐，~5GB VRAM)")
+    print("  [2] FP16 全精度 (~14GB VRAM，可能OOM)")
+    quant_choice = input("\n选择 (默认1): ").strip() or "1"
+    use_4bit = quant_choice == "1"
+
+    # 配置参数
+    num_frames = int(input("\n采样帧数 (推荐4-8，默认8): ").strip() or "8")
+    resolution = int(input("分辨率 (推荐224-336，默认336): ").strip() or "336")
+
+    print(f"\n{'='*60}")
+    print(f"测试配置")
+    print(f"  视频: {video.name}")
+    print(f"  模型: LLaVA-NeXT-Video-7B {'(4-bit)' if use_4bit else '(FP16)'}")
+    print(f"  采样帧数: {num_frames}")
+    print(f"  分辨率: {resolution}x{resolution}")
+    print(f"{'='*60}")
+
+    confirm = input("\n确认开始? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("已取消")
+        return
+
+    # 清理显存
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    print(f"\n清理后显存: {get_vram_usage():.2f}GB")
+
+    # 加载模型
+    print("\n正在加载 LLaVA-NeXT-Video-7B...")
+    from models.vlm_loader import VLMLoader
+
+    vlm = VLMLoader()
+    model_key = "llava-next-video-7b-4bit" if use_4bit else "llava-next-video-7b"
+
+    load_start = time.time()
+    success = vlm.load_model(model_key)
+    load_time = time.time() - load_start
+
+    if not success:
+        print("模型加载失败")
+        return
+
+    vram = get_vram_usage()
+    print(f"模型加载完成: {load_time:.2f}s, 显存: {vram:.2f}GB")
+
+    result1 = ""
+    result2 = ""
+    infer_time1 = 0
+    infer_time2 = 0
+
+    try:
+        # 测试1: 场景和动作描述
+        print("\n" + "=" * 60)
+        print("测试1: 视频内容描述")
+        print("-" * 60)
+
+        prompt1 = "Please describe this video in detail. What is happening? Describe the scene, people, and their actions."
+
+        infer_start = time.time()
+        result1 = vlm.generate_from_video(
+            video_path=str(video),
+            prompt=prompt1,
+            num_frames=num_frames,
+            max_new_tokens=512,
+            temperature=0.7,
+            resolution=resolution,
+        )
+        infer_time1 = time.time() - infer_start
+
+        print(f"耗时: {infer_time1:.2f}s")
+        print(f"\n{result1}")
+
+        torch.cuda.empty_cache()
+
+        # 测试2: 动作识别
+        print("\n" + "=" * 60)
+        print("测试2: 动作识别专项")
+        print("-" * 60)
+
+        prompt2 = "What activity or action is the person doing in this video? Is it a static pose or dynamic movement? If dynamic, describe the type of activity (e.g., dancing, exercising, cooking, working)."
+
+        infer_start = time.time()
+        result2 = vlm.generate_from_video(
+            video_path=str(video),
+            prompt=prompt2,
+            num_frames=num_frames,
+            max_new_tokens=256,
+            temperature=0.5,
+            resolution=resolution,
+        )
+        infer_time2 = time.time() - infer_start
+
+        print(f"耗时: {infer_time2:.2f}s")
+        print(f"\n{result2}")
+
+        # 性能统计
+        print("\n" + "=" * 60)
+        print("性能统计")
+        print("=" * 60)
+        print(f"  模型: LLaVA-NeXT-Video-7B {'(4-bit)' if use_4bit else '(FP16)'}")
+        print(f"  模型加载: {load_time:.2f}s")
+        print(f"  测试1耗时: {infer_time1:.2f}s")
+        print(f"  测试2耗时: {infer_time2:.2f}s")
+        print(f"  总推理时间: {infer_time1 + infer_time2:.2f}s")
+        print(f"  显存占用: {get_vram_usage():.2f}GB")
+
+    except Exception as e:
+        print(f"\n❌ 测试出错: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # 清理
+        print("\n正在清理显存...")
+        vlm.unload_model()
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print(f"清理完成，当前显存: {get_vram_usage():.2f}GB")
+
+    # 保存结果
+    if result1 or result2:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = OUTPUT_DIR / f"llava_next_video_test_{video.name}_{timestamp_str}.json"
+
+        result = {
+            "video": video.name,
+            "model": model_key,
+            "quantization": "4bit" if use_4bit else "fp16",
+            "num_frames": num_frames,
+            "resolution": resolution,
+            "load_time": load_time,
+            "test1": {
+                "prompt": "视频内容描述",
+                "result": result1,
+                "time": infer_time1,
+            },
+            "test2": {
+                "prompt": "动作识别",
+                "result": result2,
+                "time": infer_time2,
+            },
+            "vram_gb": vram,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        print(f"\n📁 结果已保存: {output_path}")
+
+
+# ==================== Pipeline 系统测试 ====================
+
+def run_pipeline_benchmark():
+    """Pipeline 系统级 benchmark - 测试完整流程"""
+    videos = list_test_videos()
+    if not videos:
+        return
+
+    video = select_video(videos)
+    if not video:
+        return
+
+    model_key = select_model()
+
+    print("\n" + "=" * 60)
+    print("  Pipeline 系统级 Benchmark")
+    print("=" * 60)
+    print("\n测试完整流程: FrameBuffer → HybridTrigger → VideoAnalyzer")
+    print("此测试会快速处理视频（非实时），记录每次分析的性能指标")
+
+    # 配置参数
+    print("\n参数配置:")
+    version_tag = input("  版本标识 (如 v1.0-baseline): ").strip() or "baseline"
+    version_desc = input("  版本描述 (如 初始基准): ").strip() or "无描述"
+    trigger_interval = float(input("  触发间隔秒数 (默认10): ").strip() or "10")
+    max_analyses = input("  最大分析次数 (回车=不限制): ").strip()
+    max_analyses = int(max_analyses) if max_analyses else None
+
+    print(f"\n{'='*60}")
+    print(f"测试配置")
+    print(f"  视频: {video.name}")
+    print(f"  模型: {model_key}")
+    print(f"  触发间隔: {trigger_interval}秒")
+    print(f"  最大分析次数: {max_analyses or '不限制'}")
+    print(f"  GPU: {get_gpu_info()}")
+    print(f"{'='*60}")
+
+    confirm = input("\n确认开始? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("已取消")
+        return
+
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # 导入 pipeline 组件
+    from core.frame_buffer import FrameBuffer
+    from core.hybrid_trigger import HybridTrigger
+    from core.video_analyzer import VideoAnalyzer
+    from utils.video_processor import VideoProcessor
+
+    # 初始化组件
+    print("\n初始化 Pipeline 组件...")
+
+    frame_buffer = FrameBuffer(max_frames=300, max_age_seconds=30.0)
+    trigger = HybridTrigger(
+        scan_interval=trigger_interval,
+        motion_threshold=0.05,
+        cooldown=2.0,
+    )
+
+    # 加载分析器
+    load_start = time.time()
+    analyzer = VideoAnalyzer(model_key=model_key)
+    load_time = time.time() - load_start
+    vram_after_load = get_vram_usage()
+    print(f"模型加载: {load_time:.2f}s, 显存: {vram_after_load:.2f}GB")
+
+    # 打开视频
+    processor = VideoProcessor(str(video))
+    video_duration = processor.video_info.duration
+    fps = processor.video_info.fps
+    print(f"视频时长: {video_duration:.1f}s, FPS: {fps}")
+
+    # 测试数据收集
+    analysis_results = []
+    frame_count = 0
+    analysis_count = 0
+
+    print("\n开始处理...")
+    process_start = time.time()
+
+    try:
+        # 模拟逐帧处理
+        for frame_info in processor.extract_frames(interval=0.5):  # 每0.5秒取一帧
+            frame_count += 1
+            timestamp = frame_info.timestamp
+
+            # 添加到缓存
+            frame_buffer.add_frame(frame_info.image, timestamp)
+
+            # 检查触发
+            should_trigger, reason = trigger.check(
+                frame=frame_info.image,
+                current_time=timestamp,
+            )
+
+            if should_trigger:
+                analysis_count += 1
+                reason_str = reason.value if hasattr(reason, 'value') else str(reason)
+                print(f"\n[分析 {analysis_count}] 时间: {timestamp:.1f}s, 原因: {reason_str}")
+
+                # 从缓冲区获取帧
+                frames = frame_buffer.get_frames(count=6)
+                if not frames:
+                    print("  跳过: 缓冲区无可用帧")
+                    continue
+
+                # 执行分析
+                analysis_start = time.time()
+                result = analyzer.analyze_now(frames=frames)
+                analysis_time = time.time() - analysis_start
+
+                # 记录结果
+                analysis_results.append({
+                    "index": analysis_count,
+                    "timestamp": timestamp,
+                    "trigger_reason": reason_str,
+                    "success": result.success,
+                    "analysis_time": round(analysis_time, 3),
+                    "description": result.description[:200] if result.description else "",
+                    "error": result.error or "",
+                })
+
+                status = "✓" if result.success else f"✗ {result.error}"
+                print(f"  耗时: {analysis_time:.2f}s, 状态: {status}")
+
+                if max_analyses and analysis_count >= max_analyses:
+                    print(f"\n达到最大分析次数 {max_analyses}")
+                    break
+
+    except KeyboardInterrupt:
+        print("\n\n用户中断")
+
+    finally:
+        processor.close()
+
+    process_time = time.time() - process_start
+
+    # 统计
+    print("\n" + "=" * 60)
+    print("  Benchmark 结果")
+    print("=" * 60)
+
+    successful = [r for r in analysis_results if r["success"]]
+    failed = [r for r in analysis_results if not r["success"]]
+    analysis_times = [r["analysis_time"] for r in successful]
+
+    print(f"\n基本信息:")
+    print(f"  视频: {video.name}")
+    print(f"  模型: {model_key}")
+    print(f"  GPU: {get_gpu_info()}")
+
+    print(f"\n处理统计:")
+    print(f"  视频时长: {video_duration:.1f}s")
+    print(f"  实际处理时间: {process_time:.1f}s")
+    print(f"  处理帧数: {frame_count}")
+    print(f"  分析次数: {len(analysis_results)}")
+    print(f"  成功: {len(successful)}, 失败: {len(failed)}")
+    print(f"  成功率: {len(successful)/len(analysis_results)*100:.1f}%" if analysis_results else "  成功率: N/A")
+
+    if analysis_times:
+        print(f"\n延迟统计 (成功的分析):")
+        print(f"  平均: {sum(analysis_times)/len(analysis_times):.2f}s")
+        print(f"  最小: {min(analysis_times):.2f}s")
+        print(f"  最大: {max(analysis_times):.2f}s")
+        # P95
+        sorted_times = sorted(analysis_times)
+        p95_idx = int(len(sorted_times) * 0.95)
+        print(f"  P95: {sorted_times[p95_idx] if p95_idx < len(sorted_times) else sorted_times[-1]:.2f}s")
+
+    print(f"\n资源使用:")
+    print(f"  模型加载时间: {load_time:.2f}s")
+    print(f"  显存占用: {vram_after_load:.2f}GB")
+    print(f"  当前显存: {get_vram_usage():.2f}GB")
+
+    # 保存报告
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_version = version_tag.replace("/", "-").replace(" ", "_")
+    output_path = OUTPUT_DIR / f"benchmark_{safe_version}_{video.name}_{timestamp_str}.json"
+
+    report = {
+        "type": "pipeline_benchmark",
+        "version": version_tag,
+        "description": version_desc,
+        "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "config": {
+            "video": video.name,
+            "video_duration": video_duration,
+            "model": model_key,
+            "trigger_interval": trigger_interval,
+            "gpu": get_gpu_info(),
+        },
+        "performance": {
+            "model_load_time": round(load_time, 2),
+            "vram_gb": round(vram_after_load, 2),
+            "process_time": round(process_time, 2),
+            "frames_processed": frame_count,
+            "total_analyses": len(analysis_results),
+            "successful_analyses": len(successful),
+            "failed_analyses": len(failed),
+            "success_rate": round(len(successful)/len(analysis_results)*100, 1) if analysis_results else 0,
+        },
+        "latency": {
+            "avg": round(sum(analysis_times)/len(analysis_times), 3) if analysis_times else 0,
+            "min": round(min(analysis_times), 3) if analysis_times else 0,
+            "max": round(max(analysis_times), 3) if analysis_times else 0,
+            "p95": round(sorted(analysis_times)[int(len(analysis_times)*0.95)] if analysis_times else 0, 3),
+        },
+        "analyses": analysis_results,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    print(f"\n📁 报告已保存: {output_path}")
+
+    # 清理
+    analyzer.close()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+# ==================== 视频模型对比测试 ====================
+
+def run_video_model_comparison():
+    """多视频模型对比测试"""
+    videos = list_test_videos()
+    if not videos:
+        return
+
+    video = select_video(videos)
+    if not video:
+        return
+
+    print("\n" + "=" * 60)
+    print("  视频模型对比测试")
+    print("=" * 60)
+    print("\n将测试以下模型（均使用4-bit量化）：")
+    print("  1. Qwen2-VL-2B (视频模式)")
+    print("  2. LLaVA-NeXT-Video-7B-4bit")
+    print("  3. Video-LLaVA-7B-4bit")
+
+    # 配置参数
+    num_frames = int(input("\n采样帧数 (推荐6-8，默认8): ").strip() or "8")
+    resolution = int(input("分辨率 (推荐336，默认336): ").strip() or "336")
+
+    print(f"\n{'='*60}")
+    print(f"测试配置")
+    print(f"  视频: {video.name}")
+    print(f"  采样帧数: {num_frames}")
+    print(f"  分辨率: {resolution}x{resolution}")
+    print(f"{'='*60}")
+
+    confirm = input("\n确认开始? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("已取消")
+        return
+
+    # 测试模型列表
+    test_models = [
+        ("qwen2-vl-2b", "Qwen2-VL-2B", True),  # (key, display_name, is_qwen)
+        ("llava-next-video-7b-4bit", "LLaVA-NeXT-Video-7B", False),
+        ("video-llava-7b-4bit", "Video-LLaVA-7B", False),
+    ]
+
+    # 测试提示词
+    prompt_cn = "请描述这段视频的内容，包括场景、人物和他们正在进行的活动。"
+    prompt_en = "Describe this video. What is the scene, who is in it, and what activity are they doing?"
+
+    results = []
+    import gc
+
+    for model_key, display_name, is_qwen in test_models:
+        print(f"\n{'#' * 60}")
+        print(f"# 测试: {display_name}")
+        print(f"{'#' * 60}")
+
+        # 清理显存
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        from models.vlm_loader import VLMLoader
+        vlm = VLMLoader()
+
+        result = {
+            "model": display_name,
+            "model_key": model_key,
+            "load_time": 0,
+            "infer_time": 0,
+            "vram_gb": 0,
+            "response": "",
+            "error": "",
+        }
+
+        try:
+            # 加载模型
+            load_start = time.time()
+            success = vlm.load_model(model_key)
+            result["load_time"] = time.time() - load_start
+
+            if not success:
+                result["error"] = "模型加载失败"
+                results.append(result)
+                continue
+
+            result["vram_gb"] = get_vram_usage()
+            print(f"加载完成: {result['load_time']:.2f}s, 显存: {result['vram_gb']:.2f}GB")
+
+            # 推理
+            prompt = prompt_cn if is_qwen else prompt_en
+            infer_start = time.time()
+            response = vlm.generate_from_video(
+                video_path=str(video),
+                prompt=prompt,
+                num_frames=num_frames,
+                max_new_tokens=256,
+                temperature=0.5,
+                resolution=resolution,
+            )
+            result["infer_time"] = time.time() - infer_start
+            result["response"] = response
+
+            print(f"推理耗时: {result['infer_time']:.2f}s")
+            print(f"\n回复:\n{response[:300]}{'...' if len(response) > 300 else ''}")
+
+        except Exception as e:
+            result["error"] = str(e)
+            print(f"错误: {e}")
+            import traceback
+            traceback.print_exc()
+
+        finally:
+            vlm.unload_model()
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+        results.append(result)
+
+    # 打印对比表格
+    print("\n" + "=" * 80)
+    print("  模型对比结果")
+    print("=" * 80)
+    print(f"\n{'模型':<25} {'加载时间':>10} {'推理时间':>10} {'显存':>10} {'状态':<10}")
+    print("-" * 80)
+
+    for r in results:
+        if r["error"]:
+            status = f"❌ {r['error'][:15]}"
+            print(f"{r['model']:<25} {'-':>10} {'-':>10} {'-':>10} {status}")
+        else:
+            status = "✅"
+            print(f"{r['model']:<25} {r['load_time']:>8.2f}s {r['infer_time']:>8.2f}s {r['vram_gb']:>8.2f}GB {status}")
+
+    print("-" * 80)
+
+    # 详细回复对比
+    print("\n" + "=" * 80)
+    print("  回复内容对比")
+    print("=" * 80)
+
+    for r in results:
+        if not r["error"]:
+            print(f"\n【{r['model']}】")
+            print("-" * 40)
+            print(r["response"])
+
+    # 保存结果
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = OUTPUT_DIR / f"video_model_comparison_{video.name}_{timestamp_str}.json"
+
+    report = {
+        "video": video.name,
+        "num_frames": num_frames,
+        "resolution": resolution,
+        "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "results": results,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    print(f"\n📁 结果已保存: {output_path}")
+
+
 # ==================== 主程序 ====================
 
 def main():
@@ -622,8 +1431,12 @@ def main():
         print("\n请选择操作:")
         print("  [1] 单模型测试")
         print("  [2] 多模型对比 (含性能统计)")
-        print("  [3] 多帧动态识别测试 ⭐")
-        print("  [4] 列出测试视频")
+        print("  [3] 多帧动态识别测试")
+        print("  [4] Qwen2-VL 视频模式测试")
+        print("  [5] LLaVA-NeXT-Video 测试 (4-bit)")
+        print("  [6] 视频模型对比测试 (3模型)")
+        print("  [7] Pipeline 系统级 Benchmark ⭐")
+        print("  [8] 列出测试视频")
         print("  [q] 退出")
 
         choice = input("\n选择: ").strip().lower()
@@ -635,6 +1448,14 @@ def main():
         elif choice == "3":
             run_multi_frame_test()
         elif choice == "4":
+            run_video_mode_test()
+        elif choice == "5":
+            run_llava_next_video_test()
+        elif choice == "6":
+            run_video_model_comparison()
+        elif choice == "7":
+            run_pipeline_benchmark()
+        elif choice == "8":
             list_test_videos()
         elif choice == "q":
             print("再见!")

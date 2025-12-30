@@ -64,6 +64,13 @@ VLM_MODELS = {
         "vram_gb": 5,
         "quantization": "4bit",
     },
+    # 轻量级模型 - 适合边缘设备 (Jetson)
+    "moondream2": {
+        "name": "vikhyatk/moondream2",
+        "type": "moondream",
+        "description": "Moondream2 1.6B - 边缘设备优化，仅2GB显存",
+        "vram_gb": 2,
+    },
 }
 
 # 视频处理配置
