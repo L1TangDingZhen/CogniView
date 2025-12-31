@@ -1419,6 +1419,87 @@ def run_video_model_comparison():
     print(f"\n📁 结果已保存: {output_path}")
 
 
+# ==================== 设备校准 ====================
+
+def run_device_calibration():
+    """设备性能校准 - 首次运行或换设备时执行"""
+    print("\n" + "=" * 60)
+    print("  设备性能校准 (Calibration)")
+    print("=" * 60)
+    print("\n此工具会测试当前设备的推理性能，生成各级别最优配置")
+    print("步骤:")
+    print("  1. 测试 Flash Attention vs Eager Attention")
+    print("  2. 使用更优的 Attention 运行完整性能测试")
+    print("\n预计耗时: 5-15 分钟 (取决于 GPU 性能)")
+
+    # 选择模型
+    print("\n可用模型:")
+    models = [
+        ("Qwen/Qwen2-VL-2B-Instruct", "Qwen2-VL-2B (推荐)"),
+        ("Qwen/Qwen2-VL-7B-Instruct", "Qwen2-VL-7B"),
+    ]
+    for i, (_, desc) in enumerate(models, 1):
+        print(f"  [{i}] {desc}")
+
+    model_choice = input("\n选择模型 (默认1): ").strip() or "1"
+    try:
+        model_idx = int(model_choice) - 1
+        model_name = models[model_idx][0]
+    except (ValueError, IndexError):
+        model_name = models[0][0]
+
+    print(f"\n选择的模型: {model_name}")
+    print(f"GPU: {get_gpu_info()}")
+
+    confirm = input("\n确认开始校准? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("已取消")
+        return
+
+    # 运行校准
+    from core.adaptive_config import AdaptiveConfig
+
+    config = AdaptiveConfig(model_name=model_name)
+    profile = config.calibrate(verbose=True)
+
+    # 显示结果
+    print("\n" + "=" * 60)
+    print("  校准结果")
+    print("=" * 60)
+
+    print(f"\n配置文件已保存到: {config.profile_path}")
+
+    # Flash vs Eager 结果
+    fve = profile.flash_vs_eager
+    print(f"\nFlash vs Eager 对比 ({fve['test_config']}):")
+    if fve.get("flash_available"):
+        print(f"  Flash:  {fve['flash_time']:.2f}s, {fve['flash_vram']:.2f}GB")
+        print(f"  Eager:  {fve['eager_time']:.2f}s, {fve['eager_vram']:.2f}GB")
+        print(f"  Flash 加速: {fve['flash_speedup_pct']:.1f}%")
+    else:
+        print(f"  Flash Attention 不可用")
+        print(f"  Eager: {fve['eager_time']:.2f}s, {fve['eager_vram']:.2f}GB")
+
+    print(f"\n选用: {'Flash Attention 2' if profile.use_flash_attention else 'Eager Attention'}")
+
+    print("\n可用的实时性级别:")
+    for level in ["fast", "balanced", "thorough"]:
+        cfg = profile.computed_configs[level]
+        print(f"\n  【{level}】")
+        print(f"    周期: {cfg['cycle_seconds']}秒")
+        print(f"    收集时间: {cfg['collect_seconds']:.1f}秒")
+        print(f"    分析时间: {cfg['analysis_seconds']:.1f}秒")
+        print(f"    帧数: {cfg['frames']}")
+        print(f"    分辨率: {cfg['resolution']}px")
+        print(f"    采样间隔: {cfg['sample_interval']:.2f}秒/帧")
+
+    print("\n" + "-" * 60)
+    print("使用方式:")
+    print("  from core.adaptive_config import get_adaptive_config")
+    print("  config = get_adaptive_config('balanced')")
+    print("-" * 60)
+
+
 # ==================== 主程序 ====================
 
 def main():
@@ -1437,6 +1518,7 @@ def main():
         print("  [6] 视频模型对比测试 (3模型)")
         print("  [7] Pipeline 系统级 Benchmark ⭐")
         print("  [8] 列出测试视频")
+        print("  [9] 设备性能校准 (Calibration) ⭐")
         print("  [q] 退出")
 
         choice = input("\n选择: ").strip().lower()
@@ -1457,6 +1539,8 @@ def main():
             run_pipeline_benchmark()
         elif choice == "8":
             list_test_videos()
+        elif choice == "9":
+            run_device_calibration()
         elif choice == "q":
             print("再见!")
             break

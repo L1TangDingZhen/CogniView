@@ -18,6 +18,7 @@ class VLMLoader:
         self.current_model_key = None
         self.model_type = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.dtype = torch.bfloat16  # Flash Attention 2 需要 bf16/fp16
 
     def list_available_models(self) -> dict:
         """列出所有可用模型"""

@@ -20,5 +20,8 @@ output/
 .idea/
 .vscode/
 
+# 设备配置（每台设备不同，不应共享）
+config/device_profile.json
+
 # 其他
 .think/

@@ -17,6 +17,7 @@ from core.frame_buffer import FrameBuffer
 from core.hybrid_trigger import HybridTrigger, TriggerReason
 from core.adaptive_params import AdaptiveParams, VideoParams
 from core.prompt_manager import PromptManager
+from core.adaptive_config import AdaptiveConfig, RealtimeConfig
 
 
 @dataclass
@@ -61,32 +62,74 @@ class VideoAnalyzer:
     def __init__(
         self,
         model_key: str = "qwen2-vl-2b",
+        # ===== Level 1: 极简模式 =====
+        preset: str = None,  # fast / balanced / thorough
+        # ===== Level 2: 二维模式 =====
+        cycle_seconds: float = None,
+        collection_ratio: float = None,
+        # ===== Level 3: 完全自定义 =====
+        frames: int = None,
+        resolution: int = None,
+        # ===== 其他参数 =====
         gpu_memory_gb: float = 12.0,
-        scan_interval: float = 10.0,
         motion_threshold: float = 0.05,
         cooldown: float = 2.0,
-        buffer_max_frames: int = 16,
-        buffer_max_age: float = 30.0,
-        default_frames: int = 6,
-        default_resolution: int = 336,
+        buffer_max_frames: int = 300,
+        buffer_max_age: float = 120.0,
         auto_load_model: bool = True,
+        # ===== 兼容旧参数 =====
+        realtime_level: str = None,  # 兼容旧版，等同于 preset
+        scan_interval: float = None,  # 兼容旧版
+        default_frames: int = None,   # 兼容旧版
+        default_resolution: int = None,  # 兼容旧版
     ):
         """
+        三层配置系统：
+
+        Level 1 - 极简模式：
+            VideoAnalyzer(preset="balanced")
+
+        Level 2 - 二维模式：
+            VideoAnalyzer(cycle_seconds=30, collection_ratio=0.7)
+
+        Level 3 - 完全自定义（指定3个参数，系统算第4个）：
+            VideoAnalyzer(cycle_seconds=30, frames=24, resolution=448)
+            VideoAnalyzer(cycle_seconds=30, collection_ratio=0.5, frames=24)
+
         Args:
-            model_key: 模型标识（启动时选择，运行期间不切换）
+            model_key: 模型标识
+            preset: Level 1 预设 (fast/balanced/thorough)
+            cycle_seconds: 周期时间（秒）
+            collection_ratio: 收集时间占比 (0.0-1.0)
+            frames: 帧数
+            resolution: 分辨率
             gpu_memory_gb: GPU显存大小
-            scan_interval: 定时扫描间隔（秒）
             motion_threshold: 运动检测阈值
             cooldown: 触发冷却时间（秒）
             buffer_max_frames: 帧缓冲最大帧数
             buffer_max_age: 帧缓冲最大时间（秒）
-            default_frames: 默认分析帧数
-            default_resolution: 默认分辨率
             auto_load_model: 是否自动加载模型
         """
         self.model_key = model_key
-        self.default_frames = default_frames
-        self.default_resolution = default_resolution
+        self.realtime_config: Optional[RealtimeConfig] = None
+        self.adaptive_config: Optional[AdaptiveConfig] = None
+
+        # 兼容旧版 realtime_level 参数
+        if realtime_level and not preset:
+            preset = realtime_level
+
+        # 确定配置模式并应用
+        self._apply_config(
+            preset=preset,
+            cycle_seconds=cycle_seconds,
+            collection_ratio=collection_ratio,
+            frames=frames,
+            resolution=resolution,
+            # 兼容旧版参数
+            scan_interval=scan_interval,
+            default_frames=default_frames,
+            default_resolution=default_resolution,
+        )
 
         # 组件初始化
         self.vlm = VLMLoader()
@@ -95,7 +138,7 @@ class VideoAnalyzer:
             max_age_seconds=buffer_max_age,
         )
         self.trigger = HybridTrigger(
-            scan_interval=scan_interval,
+            scan_interval=self._cycle_seconds,
             motion_threshold=motion_threshold,
             cooldown=cooldown,
         )
@@ -112,6 +155,176 @@ class VideoAnalyzer:
         # 自动加载模型
         if auto_load_model:
             self.load_model()
+
+    def _apply_config(
+        self,
+        preset: str = None,
+        cycle_seconds: float = None,
+        collection_ratio: float = None,
+        frames: int = None,
+        resolution: int = None,
+        scan_interval: float = None,
+        default_frames: int = None,
+        default_resolution: int = None,
+    ):
+        """应用配置（三层系统）"""
+        # 获取模型名称
+        model_name_map = {
+            "qwen2-vl-2b": "Qwen/Qwen2-VL-2B-Instruct",
+            "qwen2-vl-7b": "Qwen/Qwen2-VL-7B-Instruct",
+        }
+        model_name = model_name_map.get(self.model_key, "Qwen/Qwen2-VL-2B-Instruct")
+        self.adaptive_config = AdaptiveConfig(model_name=model_name)
+
+        # 检查是否已校准
+        if not self.adaptive_config.is_calibrated():
+            print(f"\n警告: 设备未校准")
+            print(f"请运行: python run_test.py 选择 [9] 设备性能校准")
+            print(f"使用默认参数继续...")
+            self._cycle_seconds = scan_interval or 30.0
+            self._frames = default_frames or 16
+            self._resolution = default_resolution or 336
+            self._collection_ratio = 0.5
+            return
+
+        # 判断配置模式
+        config_params = [cycle_seconds, collection_ratio, frames, resolution]
+        num_params = sum(1 for p in config_params if p is not None)
+
+        if preset:
+            # Level 1: 极简模式
+            self._apply_level1(preset)
+        elif num_params == 2 and cycle_seconds is not None and collection_ratio is not None:
+            # Level 2: 二维模式
+            self._apply_level2(cycle_seconds, collection_ratio)
+        elif num_params >= 3:
+            # Level 3: 完全自定义
+            self._apply_level3(cycle_seconds, collection_ratio, frames, resolution)
+        else:
+            # 无自适应配置，使用默认值或手动参数
+            self._cycle_seconds = scan_interval or 30.0
+            self._frames = default_frames or 16
+            self._resolution = default_resolution or 336
+            self._collection_ratio = 0.5
+            print(f"\n使用手动配置:")
+            print(f"  周期: {self._cycle_seconds}s")
+            print(f"  帧数: {self._frames}")
+            print(f"  分辨率: {self._resolution}px")
+
+    def _apply_level1(self, preset: str):
+        """Level 1: 极简模式"""
+        self.realtime_config = self.adaptive_config.get_config(preset)
+        self._apply_realtime_config(f"Level 1 预设 [{preset}]")
+
+    def _apply_level2(self, cycle_seconds: float, collection_ratio: float):
+        """Level 2: 二维模式"""
+        self.realtime_config = self.adaptive_config.get_config_2d(
+            cycle_seconds=cycle_seconds,
+            collection_ratio=collection_ratio,
+        )
+        self._apply_realtime_config(f"Level 2 二维 (周期={cycle_seconds}s, 收集={collection_ratio:.0%})")
+
+    def _apply_level3(
+        self,
+        cycle_seconds: float = None,
+        collection_ratio: float = None,
+        frames: int = None,
+        resolution: int = None,
+    ):
+        """Level 3: 完全自定义"""
+        self.realtime_config = self.adaptive_config.get_config_custom(
+            cycle_seconds=cycle_seconds,
+            collection_ratio=collection_ratio,
+            frames=frames,
+            resolution=resolution,
+        )
+        self._apply_realtime_config("Level 3 自定义")
+
+    def _apply_realtime_config(self, mode_desc: str):
+        """应用 RealtimeConfig 到实例属性"""
+        cfg = self.realtime_config
+        self._cycle_seconds = cfg.cycle_seconds
+        self._frames = cfg.frames
+        self._resolution = cfg.resolution
+        self._collection_ratio = cfg.collection_ratio
+
+        print(f"\n已应用 {mode_desc} 配置:")
+        print(f"  周期: {cfg.cycle_seconds}s")
+        print(f"  收集: {cfg.collect_seconds:.1f}s ({cfg.collection_ratio:.0%})")
+        print(f"  分析: {cfg.analysis_seconds:.1f}s")
+        print(f"  帧数: {cfg.frames}")
+        print(f"  分辨率: {cfg.resolution}px")
+        print(f"  采样间隔: {cfg.sample_interval:.2f}s")
+        if self.adaptive_config and self.adaptive_config.should_use_flash_attention():
+            print(f"  Attention: Flash Attention 2")
+
+    # ==================== 运行时切换配置 ====================
+
+    def set_preset(self, preset: str):
+        """
+        运行时切换到预设级别
+
+        Args:
+            preset: fast / balanced / thorough
+        """
+        if not self.adaptive_config or not self.adaptive_config.is_calibrated():
+            raise RuntimeError("设备未校准，无法切换配置")
+
+        self._apply_level1(preset)
+        self.trigger.scan_interval = self._cycle_seconds
+
+    def set_config_2d(self, cycle_seconds: float, collection_ratio: float):
+        """
+        运行时切换到二维配置
+
+        Args:
+            cycle_seconds: 周期时间
+            collection_ratio: 收集时间占比
+        """
+        if not self.adaptive_config or not self.adaptive_config.is_calibrated():
+            raise RuntimeError("设备未校准，无法切换配置")
+
+        self._apply_level2(cycle_seconds, collection_ratio)
+        self.trigger.scan_interval = self._cycle_seconds
+
+    def set_config_custom(
+        self,
+        cycle_seconds: float = None,
+        collection_ratio: float = None,
+        frames: int = None,
+        resolution: int = None,
+    ):
+        """
+        运行时切换到自定义配置（指定3个参数）
+
+        Args:
+            cycle_seconds: 周期时间
+            collection_ratio: 收集时间占比
+            frames: 帧数
+            resolution: 分辨率
+        """
+        if not self.adaptive_config or not self.adaptive_config.is_calibrated():
+            raise RuntimeError("设备未校准，无法切换配置")
+
+        self._apply_level3(cycle_seconds, collection_ratio, frames, resolution)
+        self.trigger.scan_interval = self._cycle_seconds
+
+    # 兼容旧属性名
+    @property
+    def default_frames(self) -> int:
+        return self._frames
+
+    @default_frames.setter
+    def default_frames(self, value: int):
+        self._frames = value
+
+    @property
+    def default_resolution(self) -> int:
+        return self._resolution
+
+    @default_resolution.setter
+    def default_resolution(self, value: int):
+        self._resolution = value
 
     def load_model(self) -> bool:
         """加载模型"""
@@ -335,7 +548,7 @@ class VideoAnalyzer:
             videos=video_inputs,
             padding=True,
             return_tensors="pt",
-        ).to(self.vlm.device)
+        ).to(device=self.vlm.device, dtype=self.vlm.dtype)
 
         with torch.no_grad():
             generated_ids = self.vlm.model.generate(
@@ -382,7 +595,7 @@ class VideoAnalyzer:
             text = f"USER: <video>\n{prompt} ASSISTANT:"
 
         inputs = self.vlm.processor(text=text, videos=video_clip, return_tensors="pt")
-        inputs = {k: v.to(self.vlm.device) for k, v in inputs.items()}
+        inputs = {k: v.to(device=self.vlm.device, dtype=self.vlm.dtype) if v.is_floating_point() else v.to(self.vlm.device) for k, v in inputs.items()}
 
         with torch.no_grad():
             output = self.vlm.model.generate(
@@ -421,9 +634,13 @@ class VideoAnalyzer:
     def get_stats(self) -> Dict:
         """获取统计信息"""
         trigger_stats = self.trigger.get_stats()
-        return {
+        stats = {
             "model": self.model_key,
             "model_loaded": self.model_loaded,
+            "cycle_seconds": self._cycle_seconds,
+            "collection_ratio": self._collection_ratio,
+            "frames": self._frames,
+            "resolution": self._resolution,
             "analysis_count": self.analysis_count,
             "total_processing_time": self.total_processing_time,
             "avg_processing_time": (
@@ -433,6 +650,21 @@ class VideoAnalyzer:
             "buffer_size": len(self.buffer),
             **trigger_stats,
         }
+
+        # 添加完整配置信息
+        if self.realtime_config:
+            stats["config"] = {
+                "level": self.realtime_config.level,
+                "cycle_seconds": self.realtime_config.cycle_seconds,
+                "collect_seconds": self.realtime_config.collect_seconds,
+                "analysis_seconds": self.realtime_config.analysis_seconds,
+                "collection_ratio": self.realtime_config.collection_ratio,
+                "frames": self.realtime_config.frames,
+                "resolution": self.realtime_config.resolution,
+                "sample_interval": self.realtime_config.sample_interval,
+            }
+
+        return stats
 
     def reset(self):
         """重置状态"""
